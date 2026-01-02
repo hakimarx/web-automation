@@ -1,0 +1,35 @@
+{
+  "email": {
+    "enabled": true,
+    "from_email": "email_anda@gmail.com",
+    "to_email": "tujuan@gmail.com",
+    "app_password": "app_password_gmail_anda",
+    "subject_success": "✅ Tugas Otomatisasi Web Berhasil",
+    "subject_error": "❌ Tugas Otomatisasi Web Gagal"
+  },
+  "automation": {
+    "url": "https://example.com",
+    "timeout": 30000,
+    "wait_time_between_clicks": 2,
+    "buttons": [
+      {
+        "name": "Tombol Login",
+        "selector": "#login-button",
+        "wait_after": 3
+      },
+      {
+        "name": "Tombol Submit",
+        "selector": "button[type='submit']",
+        "wait_after": 2
+      }
+    ]
+  },
+  "schedule": {
+    "times": [
+      "09:00",
+      "14:00",
+      "17:00"
+    ]
+  }
+}
+
