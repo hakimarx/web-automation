@@ -1,18 +1,25 @@
 """
-Aplikasi Otomatisasi Web dengan Penjadwalan
-Mengklik tombol web secara otomatis pada hari kerja Indonesia (Senin-Jumat)
-Mengirim notifikasi Gmail saat tugas selesai
+Aplikasi Otomatisasi Web Absensi
+Untuk pusaka-v3.kemenag.go.id dan star-asn.kemenimipas.go.id
+Dengan dukungan CAPTCHA solver OCR
 """
 
+import os
 import json
 import time
 import smtplib
-import schedule
+import argparse
 import logging
 from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+
+from captcha_solver import CaptchaSolver, manual_captcha_input
+
+# Load environment variables
+load_dotenv()
 
 # Setup logging
 logging.basicConfig(
@@ -25,65 +32,78 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
 class WebAutomation:
-    def __init__(self, config_file='config.json'):
-        """Initialize dengan file konfigurasi"""
-        with open(config_file, 'r', encoding='utf-8') as f:
-            self.config = json.load(f)
+    def __init__(self, headless=True):
+        """Initialize automation"""
+        self.headless = headless
+        self.captcha_solver = CaptchaSolver()
         
-        self.email_config = self.config.get('email', {})
-        self.automation_config = self.config.get('automation', {})
-        self.schedule_config = self.config.get('schedule', {})
+        # Load credentials from environment
+        self.credentials = {
+            'pusaka': {
+                'username': os.getenv('PUSAKA_USERNAME'),
+                'password': os.getenv('PUSAKA_PASSWORD'),
+                'url': 'https://pusaka-v3.kemenag.go.id',
+                'login_url': 'https://pusaka-v3.kemenag.go.id/login'
+            },
+            'starasn': {
+                'username': os.getenv('STARASN_USERNAME'),
+                'password': os.getenv('STARASN_PASSWORD'),
+                'url': 'https://star-asn.kemenimipas.go.id',
+                'login_url': 'https://star-asn.kemenimipas.go.id/authentication/login'
+            }
+        }
+        
+        # Email config
+        self.email_config = {
+            'from_email': os.getenv('EMAIL_FROM'),
+            'to_email': os.getenv('EMAIL_TO', 'hakimarx@gmail.com'),
+            'app_password': os.getenv('EMAIL_APP_PASSWORD')
+        }
     
     def is_working_day(self):
-        """Cek apakah hari ini adalah hari kerja Indonesia (Senin-Jumat)"""
-        today = datetime.now()
-        day_of_week = today.weekday()  # 0=Monday, 6=Sunday
-        
-        # Senin-Jumat (0-4)
-        if day_of_week < 5:
-            return True
-        return False
+        """Cek apakah hari ini adalah hari kerja (Senin-Jumat)"""
+        return datetime.now().weekday() < 5
     
     def send_email_notification(self, success=True, message=""):
         """Kirim notifikasi via Gmail"""
-        if not self.email_config.get('enabled', False):
+        if not self.email_config.get('from_email') or not self.email_config.get('app_password'):
+            logger.warning("Email tidak dikonfigurasi, skip notifikasi")
             return
         
         try:
-            # Setup email
             msg = MIMEMultipart()
             msg['From'] = self.email_config['from_email']
             msg['To'] = self.email_config['to_email']
             
             if success:
-                msg['Subject'] = self.email_config.get('subject_success', '✅ Tugas Otomatisasi Berhasil')
+                msg['Subject'] = '✅ Absensi Otomatis Berhasil'
                 body = f"""
-Tugas otomatisasi web telah berhasil diselesaikan!
+Absensi otomatis telah berhasil diselesaikan!
 
 Waktu: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 {message}
 
 ---
-Aplikasi Web Automation
+Web Automation System
                 """
             else:
-                msg['Subject'] = self.email_config.get('subject_error', '❌ Tugas Otomatisasi Gagal')
+                msg['Subject'] = '❌ Absensi Otomatis Gagal'
                 body = f"""
-Tugas otomatisasi web mengalami error!
+Absensi otomatis mengalami error!
 
 Waktu: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 Error: {message}
 
 ---
-Aplikasi Web Automation
+Web Automation System
                 """
             
             msg.attach(MIMEText(body, 'plain', 'utf-8'))
             
-            # Kirim email via SMTP Gmail
             server = smtplib.SMTP('smtp.gmail.com', 587)
             server.starttls()
             server.login(self.email_config['from_email'], self.email_config['app_password'])
@@ -95,123 +115,327 @@ Aplikasi Web Automation
         except Exception as e:
             logger.error(f"Gagal mengirim email: {str(e)}")
     
-    def run_automation(self):
-        """Jalankan otomatisasi klik tombol web"""
-        if not self.is_working_day():
-            logger.info("Hari ini bukan hari kerja, tugas dilewati")
-            return
+    def login_pusaka(self, page):
+        """Login ke pusaka-v3.kemenag.go.id"""
+        creds = self.credentials['pusaka']
         
-        url = self.automation_config.get('url')
-        buttons = self.automation_config.get('buttons', [])
-        wait_time = self.automation_config.get('wait_time_between_clicks', 2)
-        timeout = self.automation_config.get('timeout', 30000)  # 30 detik default
+        logger.info(f"Membuka Pusaka: {creds['login_url']}")
+        page.goto(creds['login_url'], timeout=30000, wait_until='domcontentloaded')
+        page.wait_for_timeout(2000)
         
-        if not url or not buttons:
-            logger.error("URL atau tombol tidak dikonfigurasi")
-            self.send_email_notification(success=False, message="Konfigurasi tidak lengkap")
-            return
+        # Fill login form
+        logger.info("Mengisi form login Pusaka...")
+        page.fill("input[placeholder='Username']", creds['username'])
+        page.fill("input[placeholder='Password']", creds['password'])
+        
+        # Click login button
+        page.click("button.btn.bg-indigo-400")
+        page.wait_for_timeout(3000)
+        
+        # Check if login successful (check for dashboard or error)
+        current_url = page.url
+        if 'login' not in current_url.lower():
+            logger.info("✅ Login Pusaka berhasil!")
+            return True
+        else:
+            logger.error("❌ Login Pusaka gagal - masih di halaman login")
+            return False
+    
+    def login_starasn(self, page):
+        """Login ke star-asn.kemenimipas.go.id dengan CAPTCHA solving"""
+        creds = self.credentials['starasn']
+        max_captcha_attempts = 7
+        
+        for attempt in range(max_captcha_attempts):
+            logger.info(f"Membuka Star-ASN: {creds['login_url']} (Attempt {attempt + 1})")
+            page.goto(creds['login_url'], timeout=30000, wait_until='domcontentloaded')
+            page.wait_for_timeout(2000)
+            
+            # Close any modal that appears
+            try:
+                close_btn = page.locator("button.btn-close, .modal-header button[aria-label='Close']")
+                if close_btn.count() > 0:
+                    close_btn.first.click()
+                    page.wait_for_timeout(500)
+            except:
+                pass
+            
+            # Fill login form
+            logger.info("Mengisi form login Star-ASN...")
+            page.fill("input#username", creds['username'])
+            page.fill("input#password-input", creds['password'])
+            
+            # Get CAPTCHA image and solve
+            captcha_img = page.locator("img#kv-image")
+            if captcha_img.count() > 0:
+                logger.info("Mendeteksi CAPTCHA, mencoba solve dengan OCR...")
+                
+                # Get CAPTCHA image source
+                captcha_url = captcha_img.get_attribute("src")
+                if not captcha_url.startswith("http"):
+                    captcha_url = f"https://star-asn.kemenimipas.go.id{captcha_url}"
+                
+                # Get cookies from browser for authenticated request
+                cookies = page.context.cookies()
+                cookie_dict = {c['name']: c['value'] for c in cookies}
+                
+                # Try OCR
+                captcha_text = self.captcha_solver.solve_from_url(captcha_url, cookies=cookie_dict)
+                
+                if captcha_text and len(captcha_text) >= 4:
+                    logger.info(f"CAPTCHA OCR result: {captcha_text}")
+                    page.fill("input#kv-captcha", captcha_text)
+                else:
+                    # Fallback: manual input if not headless
+                    if not self.headless:
+                        logger.warning("OCR gagal, menunggu input manual...")
+                        # Wait for user to manually enter CAPTCHA
+                        page.wait_for_timeout(10000)  # 10 seconds to enter manually
+                    else:
+                        # Refresh CAPTCHA and try again
+                        refresh_btn = page.locator("button.btn-sm.btn-primary")
+                        if refresh_btn.count() > 0:
+                            refresh_btn.click()
+                            page.wait_for_timeout(1000)
+                            continue
+            
+            # Click login button
+            page.click("button.btn-primary.d-grid.w-100")
+            page.wait_for_timeout(3000)
+            
+            # Check if login successful
+            current_url = page.url
+            if 'login' not in current_url.lower() and 'authentication' not in current_url.lower():
+                logger.info("✅ Login Star-ASN berhasil!")
+                return True
+            else:
+                logger.warning(f"❌ Login Star-ASN gagal (attempt {attempt + 1}), mencoba lagi...")
+        
+        logger.error("❌ Login Star-ASN gagal setelah semua percobaan")
+        return False
+    
+    def do_presence_pusaka(self, page):
+        """Melakukan presensi di Pusaka"""
+        try:
+            logger.info("Membuka halaman presensi...")
+            page.goto("https://pusaka-v3.kemenag.go.id/profile/presence", timeout=30000)
+            page.wait_for_timeout(3000)
+            
+            # Cek jam
+            current_hour = datetime.now().hour
+            
+            # 1. Cek tombol Presensi MASUK
+            btn_masuk = page.locator("button:has-text('Presensi Masuk'), button:has-text('Absen Masuk')")
+            if btn_masuk.count() > 0:
+                logger.info("Tombol Presensi Masuk ditemukan. Melakukan klik...")
+                btn_masuk.first.click()
+                page.wait_for_timeout(3000)
+                page.screenshot(path="presensi_pusaka_result.png")
+                logger.info("✅ Klik Presensi Masuk berhasil dilakukan")
+                return True, "Presensi Masuk berhasil diklik"
+
+            # 2. Cek tombol Presensi PULANG
+            btn_pulang = page.locator("button:has-text('Presensi Pulang'), button:has-text('Absen Pulang'), button:has-text('Simpan')")
+            if btn_pulang.count() > 0:
+                if current_hour >= 16:
+                    logger.info("Tombol Presensi Pulang ditemukan dan sudah waktunya. Melakukan klik...")
+                    btn_pulang.first.click()
+                    page.wait_for_timeout(3000)
+                    page.screenshot(path="presensi_pusaka_result.png")
+                    logger.info("✅ Klik Presensi Pulang berhasil dilakukan")
+                    return True, "Presensi Pulang berhasil diklik"
+                else:
+                    return True, "Menunggu jam pulang (Tombol Pulang sudah ada)"
+            
+            # 3. Cek Status Sudah Absen
+            if page.locator("text=Sudah Presensi").count() > 0 or page.locator("text=Anda sudah melakukan presensi").count() > 0:
+                logger.info("Info: Sudah melakukan presensi hari ini")
+                return True, "Sudah melakukan presensi sebelumnya"
+                
+            logger.warning("❌ Tidak ditemukan tombol presensi apapun")
+            page.screenshot(path="presensi_pusaka_failed.png")
+            return False, "Tombol Presensi tidak ditemukan"
+                
+        except Exception as e:
+            logger.error(f"Error saat presensi: {str(e)}")
+            return False, str(e)
+    def do_presence_starasn(self, page):
+        """Melakukan presensi di Star-ASN dashboard"""
+        try:
+            logger.info("Mengecek status presensi Star-ASN...")
+            page.wait_for_timeout(3000)
+            
+            # Cek jam saat ini
+            current_hour = datetime.now().hour
+            
+            # Prioritas: UI Based
+            # 1. Cek Card MASUK dulu
+            masuk_card = page.locator("div.card:has-text('PRESENSI MASUK')")
+            if masuk_card.count() > 0:
+                # Cek apakah ada tombol/link di dalamnya yang aktif
+                action_btn = masuk_card.locator("a.btn, button.btn").first
+                status_text = masuk_card.text_content()
+                
+                # Jika ada tombol dan status "Belum Presensi" -> KLIK (Kapanpun!)
+                if action_btn.count() > 0 and "Belum Presensi" in status_text:
+                    logger.info("Ditemukan tombol PRESENSI MASUK. Melakukan klik...")
+                    action_btn.click()
+                    page.wait_for_timeout(5000)
+                    page.screenshot(path="starasn_result_masuk.png")
+                    return True, "Presensi Masuk berhasil diklik"
+
+            # 2. Cek Card PULANG
+            pulang_card = page.locator("div.card:has-text('PRESENSI PULANG')")
+            if pulang_card.count() > 0:
+                action_btn = pulang_card.locator("a.btn, button.btn").first
+                status_text = pulang_card.text_content()
+                
+                # Klik pulang HANYA jika jam > 16 (atau jam 23 sesuai request khusus, tapi default aman > 16)
+                if action_btn.count() > 0 and "Belum Presensi" in status_text:
+                    if current_hour >= 16:
+                        logger.info("Ditemukan tombol PRESENSI PULANG dan sudah waktunya. Melakukan klik...")
+                        action_btn.click()
+                        page.wait_for_timeout(5000)
+                        page.screenshot(path="starasn_result_pulang.png")
+                        return True, "Presensi Pulang berhasil diklik"
+                    else:
+                        logger.info("Tombol Pulang ada, tapi belum waktunya (Wait until > 16:00)")
+                        return True, "Menunggu jam pulang"
+            
+            logger.info("Tidak ada aksi presensi yang diperlukan saat ini.")
+            return True, "Status OK / Sudah Presensi"
+
+        except Exception as e:
+            logger.error(f"Error presensi Star-ASN: {e}")
+            return False, str(e)
+
+    def run_automation(self, site='all'):
+        """Jalankan otomatisasi dengan dynamic geolocation"""
+        results = []
+        
+        # Koordinat
+        COORD_PUSAKA = {'latitude': -7.3794, 'longitude': 112.7875} # Sidoarjo
+        COORD_STARASN = {'latitude': -0.5022, 'longitude': 117.1332} # Samarinda (Jl MT Haryono)
         
         try:
-            logger.info(f"Memulai otomatisasi untuk URL: {url}")
-            
             with sync_playwright() as p:
-                # Launch browser dalam headless mode untuk efisiensi resource
-                browser = p.chromium.launch(headless=True)
-                context = browser.new_context(
-                    viewport={'width': 1280, 'height': 720},
-                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                )
-                page = context.new_page()
+                browser = p.chromium.launch(headless=self.headless)
                 
-                # Buka URL
-                logger.info(f"Membuka URL: {url}")
-                page.goto(url, timeout=timeout, wait_until='domcontentloaded')
-                
-                # Tunggu sebentar untuk halaman load
-                page.wait_for_timeout(2000)
-                
-                # Klik setiap tombol sesuai konfigurasi
-                clicked_buttons = []
-                for i, button_config in enumerate(buttons):
-                    selector = button_config.get('selector')
-                    name = button_config.get('name', f'Button {i+1}')
-                    wait_after = button_config.get('wait_after', wait_time)
-                    
-                    if not selector:
-                        logger.warning(f"Selector tidak ditemukan untuk tombol: {name}")
-                        continue
-                    
+                # 1. Handle Pusaka (Sidoarjo)
+                if site in ['all', 'pusaka']:
+                    logger.info("--- Proses Pusaka (Lokasi: Sidoarjo) ---")
+                    context_pusaka = browser.new_context(
+                        viewport={'width': 1280, 'height': 720},
+                        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        geolocation=COORD_PUSAKA,
+                        permissions=['geolocation']
+                    )
+                    page_pusaka = context_pusaka.new_page()
                     try:
-                        logger.info(f"Mengklik tombol: {name} (selector: {selector})")
-                        page.click(selector, timeout=timeout)
-                        clicked_buttons.append(name)
-                        
-                        # Tunggu setelah klik
-                        if wait_after > 0:
-                            page.wait_for_timeout(wait_after * 1000)
-                        
-                    except PlaywrightTimeoutError:
-                        logger.error(f"Timeout saat mengklik tombol: {name}")
+                        if self.login_pusaka(page_pusaka):
+                            success, msg = self.do_presence_pusaka(page_pusaka)
+                            # Logic khusus Pusaka: Jika msg="Presensi Masuk berhasil...", info user
+                            results.append(('Pusaka', success, msg))
+                        else:
+                            results.append(('Pusaka', False, "Login Gagal"))
                     except Exception as e:
-                        logger.error(f"Error saat mengklik tombol {name}: {str(e)}")
+                        logger.error(f"Error Pusaka: {e}")
+                        results.append(('Pusaka', False, str(e)))
+                    context_pusaka.close()
                 
-                # Tunggu sebelum close
-                page.wait_for_timeout(1000)
+                # 2. Handle Star-ASN (Samarinda)
+                if site in ['all', 'starasn']:
+                    logger.info("--- Proses Star-ASN (Lokasi: Samarinda) ---")
+                    context_star = browser.new_context(
+                        viewport={'width': 1280, 'height': 720},
+                        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        geolocation=COORD_STARASN,
+                        permissions=['geolocation']
+                    )
+                    page_star = context_star.new_page()
+                    try:
+                        if self.login_starasn(page_star):
+                            success, msg = self.do_presence_starasn(page_star)
+                            results.append(('Star-ASN', success, msg))
+                        else:
+                            results.append(('Star-ASN', False, "Login Gagal"))
+                    except Exception as e:
+                        logger.error(f"Error Star-ASN: {e}")
+                        results.append(('Star-ASN', False, str(e)))
+                    context_star.close()
                 
                 browser.close()
             
-            # Kirim notifikasi sukses
-            success_message = f"Berhasil mengklik {len(clicked_buttons)} tombol:\n" + "\n".join(f"- {btn}" for btn in clicked_buttons)
-            logger.info(f"Otomatisasi selesai: {success_message}")
-            self.send_email_notification(success=True, message=success_message)
+            # Send notification HANYA jika ada aksi penting (Berhasil Klik atau Gagal Error)
+            # Skip notifikasi jika statusnya hanya "Sudah Presensi" atau "Menunggu jam pulang"
+            should_notify = any("berhasil diklik" in str(r[2]) for r in results) or any(not r[1] for r in results)
+            
+            if should_notify:
+                all_success = all(r[1] for r in results)
+                message = "\n".join(f"- {name}: {msg}" for name, success, msg in results)
+                self.send_email_notification(success=all_success, message=message)
+            else:
+                logger.info("Tidak ada aktivitas presensi baru, skip email.")
+            
+            return [(r[0], r[1]) for r in results] 
             
         except Exception as e:
-            error_message = f"Error saat menjalankan otomatisasi: {str(e)}"
-            logger.error(error_message)
-            self.send_email_notification(success=False, message=error_message)
-    
-    def setup_schedule(self):
-        """Setup penjadwalan berdasarkan konfigurasi"""
-        schedule_times = self.schedule_config.get('times', [])
-        
-        for time_str in schedule_times:
-            # Format waktu: "HH:MM" (24 jam)
-            schedule.every().monday.at(time_str).do(self.run_automation)
-            schedule.every().tuesday.at(time_str).do(self.run_automation)
-            schedule.every().wednesday.at(time_str).do(self.run_automation)
-            schedule.every().thursday.at(time_str).do(self.run_automation)
-            schedule.every().friday.at(time_str).do(self.run_automation)
-            
-            logger.info(f"Penjadwalan ditambahkan: {time_str} (Senin-Jumat)")
-    
-    def run_scheduler(self):
-        """Jalankan scheduler (blocking)"""
-        logger.info("Scheduler dimulai...")
-        logger.info("Aplikasi akan berjalan terus. Tekan Ctrl+C untuk berhenti.")
-        
-        while True:
-            schedule.run_pending()
-            time.sleep(60)  # Cek setiap 1 menit
+            logger.error(f"Error automation: {str(e)}")
+            self.send_email_notification(success=False, message=str(e))
+            return []
 
 
 def main():
-    """Main function"""
-    try:
-        automation = WebAutomation()
-        automation.setup_schedule()
+    parser = argparse.ArgumentParser(description='Web Automation')
+    parser.add_argument('--test', action='store_true', help='Test run (Visual)')
+    parser.add_argument('--site', choices=['all', 'pusaka', 'starasn'], default='all')
+    parser.add_argument('--headless', action='store_true')
+    args = parser.parse_args()
+    
+    # Logic Headless:
+    # Jika --test: Visual (headless=False)
+    # Jika tidak: Visual (headless=False) -> User request simulasi visual
+    # UBAH DEFAULT KE FALSE agar user bisa lihat di laptop
+    headless = False 
+    if args.headless: headless = True
+    
+    automation = WebAutomation(headless=headless)
+    
+    if args.test:
+        logger.info("=== MODE TEST ===")
+        results = automation.run_automation(site=args.site)
+        print("\n=== HASIL TEST ===")
+        for name, success in results:
+            status = "[OK]" if success else "[FAIL]"
+            print(f"{name}: {status}")
+    else:
+        # Full Day Polling Mode
+        logger.info("Memulai Full Day Scheduler (Polling 15 menit)...")
+        logger.info("Aplikasi akan berjalan 06:00 - 23:55 WIB")
+        logger.info("Logika: Jika ada tombol MASUK -> Klik. Jika ada tombol PULANG -> Klik (di jam pulang).")
         
-        # Jalankan sekali sekarang jika dijadwalkan
-        # automation.run_automation()
-        
-        # Jalankan scheduler
-        automation.run_scheduler()
-        
-    except KeyboardInterrupt:
-        logger.info("Aplikasi dihentikan oleh user")
-    except Exception as e:
-        logger.error(f"Error: {str(e)}")
-
+        while True:
+            try:
+                now = datetime.now()
+                if automation.is_working_day():
+                    current_hour = now.hour
+                    
+                    # Jalankan pengecekan dari jam 06:00 sampai 23:55
+                    if 6 <= current_hour <= 23:
+                         logger.info(f"Running Scheduled Check at {now.strftime('%H:%M')}")
+                         automation.run_automation()
+                    else:
+                        logger.info("Di luar jam operasional (00:00 - 06:00). Sleep.")
+                
+                # Sleep 15 menit
+                time.sleep(15 * 60)
+                
+            except KeyboardInterrupt:
+                logger.info("Scheduler stops.")
+                break
+            except Exception as e:
+                logger.error(f"Scheduler error: {e}")
+                time.sleep(60)
 
 if __name__ == "__main__":
     main()
-
