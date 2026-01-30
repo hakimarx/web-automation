@@ -7,6 +7,7 @@ Dengan dukungan CAPTCHA solver OCR
 import os
 import json
 import time
+import random
 import smtplib
 import argparse
 import logging
@@ -136,9 +137,14 @@ Web Automation System
         current_url = page.url
         if 'login' not in current_url.lower():
             logger.info("✅ Login Pusaka berhasil!")
+            print("[OK] Login Pusaka berhasil!")
             return True
         else:
             logger.error("❌ Login Pusaka gagal - masih di halaman login")
+            print("[FAIL] Login Pusaka gagal - masih di halaman login")
+            page.screenshot(path="login_pusaka_failed.png")
+            with open("login_pusaka_failed.html", "w", encoding="utf-8") as f:
+                f.write(page.content())
             return False
     
     def login_starasn(self, page):
@@ -207,11 +213,17 @@ Web Automation System
             current_url = page.url
             if 'login' not in current_url.lower() and 'authentication' not in current_url.lower():
                 logger.info("✅ Login Star-ASN berhasil!")
+                print("[OK] Login Star-ASN berhasil!")
                 return True
             else:
                 logger.warning(f"❌ Login Star-ASN gagal (attempt {attempt + 1}), mencoba lagi...")
+                print(f"[FAIL] Login Star-ASN gagal (attempt {attempt + 1}), mencoba lagi...")
+                page.screenshot(path=f"login_starasn_failed_attempt_{attempt+1}.png")
+                with open(f"login_starasn_failed_attempt_{attempt+1}.html", "w", encoding="utf-8") as f:
+                    f.write(page.content())
         
         logger.error("❌ Login Star-ASN gagal setelah semua percobaan")
+        print("[FAIL] Login Star-ASN gagal setelah semua percobaan")
         return False
     
     def do_presence_pusaka(self, page):
@@ -313,9 +325,9 @@ Web Automation System
         """Jalankan otomatisasi dengan dynamic geolocation"""
         results = []
         
-        # Koordinat
-        COORD_PUSAKA = {'latitude': -7.3794, 'longitude': 112.7875} # Sidoarjo
-        COORD_STARASN = {'latitude': -0.5022, 'longitude': 117.1332} # Samarinda (Jl MT Haryono)
+        # Koordinat (Updated sesuai alamat spesifik)
+        COORD_PUSAKA = {'latitude': -7.3789, 'longitude': 112.7698}  # Jl Raya Juanda 26, Sidoarjo
+        COORD_STARASN = {'latitude': -0.4937, 'longitude': 117.1505}  # Bapas Samarinda
         
         try:
             with sync_playwright() as p:
@@ -361,6 +373,9 @@ Web Automation System
                             results.append(('Star-ASN', False, "Login Gagal"))
                     except Exception as e:
                         logger.error(f"Error Star-ASN: {e}")
+                        print(f"Error Star-ASN: {e}")
+                        import traceback
+                        traceback.print_exc()
                         results.append(('Star-ASN', False, str(e)))
                     context_star.close()
                 
@@ -385,50 +400,132 @@ Web Automation System
             return []
 
 
+def generate_random_times():
+    """Generate waktu random untuk absen hari ini"""
+    # Pagi: 06:00-07:30 (360-450 menit dari midnight)
+    morning_minutes = random.randint(360, 450)
+    morning_hour = morning_minutes // 60
+    morning_min = morning_minutes % 60
+    
+    # Sore: 16:30-19:00 (990-1140 menit dari midnight)
+    afternoon_minutes = random.randint(990, 1140)
+    afternoon_hour = afternoon_minutes // 60
+    afternoon_min = afternoon_minutes % 60
+    
+    return {
+        'morning': {'hour': morning_hour, 'minute': morning_min},
+        'afternoon': {'hour': afternoon_hour, 'minute': afternoon_min}
+    }
+
+
+def select_platform():
+    """Memilih platform absensi di awal aplikasi"""
+    print("\n" + "="*50)
+    print("       PILIH PLATFORM ABSENSI")
+    print("="*50)
+    print("1. Pusaka (Jl Raya Juanda 26, Sidoarjo)")
+    print("2. Star ASN (Bapas Samarinda)")
+    print("3. Keduanya")
+    print("="*50)
+    
+    while True:
+        choice = input("\nPilihan Anda (1/2/3): ").strip()
+        if choice == '1':
+            return 'pusaka'
+        elif choice == '2':
+            return 'starasn'
+        elif choice == '3':
+            return 'all'
+        else:
+            print("Pilihan tidak valid. Masukkan 1, 2, atau 3.")
+
+
 def main():
     parser = argparse.ArgumentParser(description='Web Automation')
     parser.add_argument('--test', action='store_true', help='Test run (Visual)')
-    parser.add_argument('--site', choices=['all', 'pusaka', 'starasn'], default='all')
+    parser.add_argument('--site', choices=['all', 'pusaka', 'starasn'], default=None)
     parser.add_argument('--headless', action='store_true')
     args = parser.parse_args()
     
     # Logic Headless:
     # Jika --test: Visual (headless=False)
     # Jika tidak: Visual (headless=False) -> User request simulasi visual
-    # UBAH DEFAULT KE FALSE agar user bisa lihat di laptop
     headless = False 
     if args.headless: headless = True
     
     automation = WebAutomation(headless=headless)
     
+    # Jika site tidak di-specify via argumen, tanya user
+    if args.site:
+        site = args.site
+    else:
+        site = select_platform()
+    
+    logger.info(f"Platform dipilih: {site.upper()}")
+    
     if args.test:
         logger.info("=== MODE TEST ===")
-        results = automation.run_automation(site=args.site)
+        results = automation.run_automation(site=site)
         print("\n=== HASIL TEST ===")
         for name, success in results:
             status = "[OK]" if success else "[FAIL]"
             print(f"{name}: {status}")
     else:
-        # Full Day Polling Mode
-        logger.info("Memulai Full Day Scheduler (Polling 15 menit)...")
-        logger.info("Aplikasi akan berjalan 06:00 - 23:55 WIB")
-        logger.info("Logika: Jika ada tombol MASUK -> Klik. Jika ada tombol PULANG -> Klik (di jam pulang).")
+        # Random Time Scheduler Mode
+        logger.info("="*50)
+        logger.info("Memulai Random Time Scheduler...")
+        
+        last_date = None
+        random_times = None
+        morning_done = False
+        afternoon_done = False
         
         while True:
             try:
                 now = datetime.now()
-                if automation.is_working_day():
-                    current_hour = now.hour
-                    
-                    # Jalankan pengecekan dari jam 06:00 sampai 23:55
-                    if 6 <= current_hour <= 23:
-                         logger.info(f"Running Scheduled Check at {now.strftime('%H:%M')}")
-                         automation.run_automation()
-                    else:
-                        logger.info("Di luar jam operasional (00:00 - 06:00). Sleep.")
+                today = now.date()
                 
-                # Sleep 15 menit
-                time.sleep(15 * 60)
+                # Generate waktu baru di awal hari baru
+                if last_date != today:
+                    random_times = generate_random_times()
+                    last_date = today
+                    morning_done = False
+                    afternoon_done = False
+                    
+                    logger.info(f"\n{'='*50}")
+                    logger.info(f"Hari Baru: {today.strftime('%A, %d %B %Y')}")
+                    logger.info(f"Waktu Absen Masuk : {random_times['morning']['hour']:02d}:{random_times['morning']['minute']:02d} WIB")
+                    logger.info(f"Waktu Absen Pulang: {random_times['afternoon']['hour']:02d}:{random_times['afternoon']['minute']:02d} WIB")
+                    logger.info(f"{'='*50}\n")
+                
+                if automation.is_working_day() and random_times:
+                    current_hour = now.hour
+                    current_min = now.minute
+                    
+                    # Check absen pagi
+                    if not morning_done:
+                        if (current_hour > random_times['morning']['hour'] or 
+                            (current_hour == random_times['morning']['hour'] and current_min >= random_times['morning']['minute'])):
+                            logger.info(f"⏰ Waktu Absen MASUK! ({now.strftime('%H:%M')})")
+                            automation.run_automation(site=site)
+                            morning_done = True
+                    
+                    # Check absen sore
+                    if not afternoon_done:
+                        if (current_hour > random_times['afternoon']['hour'] or 
+                            (current_hour == random_times['afternoon']['hour'] and current_min >= random_times['afternoon']['minute'])):
+                            logger.info(f"⏰ Waktu Absen PULANG! ({now.strftime('%H:%M')})")
+                            automation.run_automation(site=site)
+                            afternoon_done = True
+                    
+                    if morning_done and afternoon_done:
+                        logger.info(f"✅ Absen hari ini selesai. Menunggu hari berikutnya...")
+                else:
+                    if not automation.is_working_day():
+                        logger.info(f"Hari ini bukan hari kerja ({now.strftime('%A')}). Skip.")
+                
+                # Sleep 1 menit untuk cek lebih presisi
+                time.sleep(60)
                 
             except KeyboardInterrupt:
                 logger.info("Scheduler stops.")
@@ -436,6 +533,7 @@ def main():
             except Exception as e:
                 logger.error(f"Scheduler error: {e}")
                 time.sleep(60)
+
 
 if __name__ == "__main__":
     main()
