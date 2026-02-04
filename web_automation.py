@@ -176,34 +176,39 @@ Web Automation System
             if captcha_img.count() > 0:
                 logger.info("Mendeteksi CAPTCHA, mencoba solve dengan OCR...")
                 
-                # Get CAPTCHA image source
-                captcha_url = captcha_img.get_attribute("src")
-                if not captcha_url.startswith("http"):
-                    captcha_url = f"https://star-asn.kemenimipas.go.id{captcha_url}"
-                
-                # Get cookies from browser for authenticated request
-                cookies = page.context.cookies()
-                cookie_dict = {c['name']: c['value'] for c in cookies}
-                
-                # Try OCR
-                captcha_text = self.captcha_solver.solve_from_url(captcha_url, cookies=cookie_dict)
-                
-                if captcha_text and len(captcha_text) >= 4:
-                    logger.info(f"CAPTCHA OCR result: {captcha_text}")
-                    page.fill("input#kv-captcha", captcha_text)
-                else:
-                    # Fallback: manual input if not headless
-                    if not self.headless:
-                        logger.warning("OCR gagal, menunggu input manual...")
-                        # Wait for user to manually enter CAPTCHA
-                        page.wait_for_timeout(10000)  # 10 seconds to enter manually
+                # Get CAPTCHA image via screenshot (more reliable than downloading URL)
+                try:
+                    from io import BytesIO
+                    from PIL import Image
+                    
+                    screenshot_bytes = captcha_img.screenshot()
+                    img = Image.open(BytesIO(screenshot_bytes))
+                    
+                    # Try OCR
+                    captcha_text = self.captcha_solver.solve_image(img)
+                    
+                    if captcha_text and len(captcha_text) >= 4:
+                        logger.info(f"CAPTCHA OCR result: {captcha_text}")
+                        page.fill("input#kv-captcha", captcha_text)
                     else:
-                        # Refresh CAPTCHA and try again
+                        # Fallback: Refresh CAPTCHA and try again
+                        logger.warning("OCR gagal mendapatkan teks yang valid, refresh captcha...")
                         refresh_btn = page.locator("button.btn-sm.btn-primary")
                         if refresh_btn.count() > 0:
                             refresh_btn.click()
                             page.wait_for_timeout(1000)
                             continue
+                except Exception as e:
+                    logger.error(f"Error saat processing captcha: {e}")
+                    # Fallback to URL method
+                    captcha_url = captcha_img.get_attribute("src")
+                    if not captcha_url.startswith("http"):
+                        captcha_url = f"https://star-asn.kemenimipas.go.id{captcha_url}"
+                    cookies = page.context.cookies()
+                    cookie_dict = {c['name']: c['value'] for c in cookies}
+                    captcha_text = self.captcha_solver.solve_from_url(captcha_url, cookies=cookie_dict)
+                    if captcha_text:
+                        page.fill("input#kv-captcha", captcha_text)
             
             # Click login button
             page.click("button.btn-primary.d-grid.w-100")
